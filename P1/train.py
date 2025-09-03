@@ -39,3 +39,4 @@ history = model.fit(data["X_train"], data["y_train"],
                     validation_data=(data["X_test"], data["y_test"]),
                     callbacks=[checkpointer, tensorboard],
                     verbose=1)
+

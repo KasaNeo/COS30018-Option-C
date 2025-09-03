@@ -33,6 +33,157 @@ from tensorflow.keras.layers import Dense, Dropout, LSTM, InputLayer
 # 1) Check if data has been saved before. 
 # If so, load the saved data
 # If not, save the data into a directory
+
+import os
+import datetime as dt
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+
+def load_data(
+    ticker: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    feature_columns: list[str] = None,      # e.g. ["Open","High","Low","Close","Adj Close","Volume"]
+    target_column: str = "Close",
+    handle_nan: str = "drop",               # "drop" | "ffill" | "bfill" | "mean"
+    split_method: str = "ratio",            # "ratio" | "date" | "random"
+    split_ratio: float = 0.8,               # used by "ratio" and "random"
+    split_date: str | None = None,          # used by "date"
+    shuffle: bool = True,
+    save_local: bool = True,
+    file_path: str | None = None,           # CSV cache path
+    scale_features: bool = True
+):
+    """
+    Load stock data, handle NaNs, split into train/test (ratio/date/random),
+    optionally cache locally, and scale features while returning per-column scalers.
+
+    Returns:
+        X_train (pd.DataFrame),
+        X_test  (pd.DataFrame),
+        y_train (pd.Series),
+        y_test  (pd.Series),
+        scalers (dict[str, MinMaxScaler]),
+        df_full (pd.DataFrame)   # cleaned (and possibly scaled) full dataframe for reference
+    """
+
+    if feature_columns is None:
+        feature_columns = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+
+    if start_date is None:
+        start_date = dt.datetime(2010, 1, 1).strftime("%Y-%m-%d")
+    if end_date is None:
+        end_date = dt.datetime.now().strftime("%Y-%m-%d")
+
+    if file_path is None:
+        safe_ticker = ticker.replace("/", "_")
+        file_path = f"{safe_ticker}_{start_date}_{end_date}.csv"
+
+    if save_local and os.path.exists(file_path):
+        df = pd.read_csv(file_path, index_col=0, parse_dates=True)
+        print(f"[INFO] Loaded cached data from {file_path}")
+    else:
+        print(f"[INFO] Downloading {ticker} from {start_date} to {end_date}")
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        if df.empty:
+            raise ValueError(f"No data found for {ticker} between {start_date} and {end_date}.")
+        if save_local:
+            df.to_csv(file_path)
+            print(f"[INFO] Saved data to {file_path}")
+
+    # Ensure required columns exist
+    missing = [c for c in feature_columns + [target_column] if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns in downloaded data: {missing}")
+
+    # NaN handling
+    if handle_nan == "drop":
+        df = df.dropna()
+        print("[INFO] Rows with NaN values were dropped")
+    elif handle_nan == "fill":
+        df = df.fillna(df.mean())
+        print("[INFO] Rows with NaN values have been filled with column mean")
+    else:
+        raise ValueError("handle_nan must be one of: 'drop' or 'fill'.")
+    if df.empty:
+        raise ValueError("All rows were removed during NaN handling. Adjust your options/date range.")
+
+    # Build feature/target
+    X = df[feature_columns].copy()
+    y = df[target_column].copy()
+
+    # Scale features (per-column scalers)
+    scalers: dict[str, MinMaxScaler] = {}
+    if scale_features:
+        for col in feature_columns:
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            X.loc[:, col] = scaler.fit_transform(X[col].values.reshape(-1, 1))
+            scalers[col] = scaler
+        print("[INFO] Scaled features with MinMaxScaler.")
+
+    # Split
+    if split_method == "ratio":
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=1 - split_ratio, shuffle=shuffle, random_state=42
+        )
+        print(f"[INFO] Split by ratio: {split_ratio*100:.0f}% train / {(1-split_ratio)*100:.0f}% test.")
+    elif split_method == "random":
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=1 - split_ratio, shuffle=True, random_state=42
+        )
+        print("[INFO] Split randomly.")
+    elif split_method == "date":
+        if split_date is None:
+            raise ValueError("split_date must be provided when split_method='date'.")
+        if not isinstance(X.index, pd.DatetimeIndex):
+            raise ValueError("Index must be datetime for date-based splitting.")
+        X_train = X.loc[:split_date]
+        X_test  = X.loc[split_date:]
+        y_train = y.loc[:split_date]
+        y_test  = y.loc[split_date:]
+        if len(X_train) == 0 or len(X_test) == 0:
+            raise ValueError("Date split produced empty train or test set. Pick a different split_date.")
+        print(f"[INFO] Split by date at {split_date}.")
+    else:
+        raise ValueError("split_method must be one of: 'ratio', 'date', 'random'.")
+
+    return X_train, X_test, y_train, y_test, scalers
+
+# Example usage
+ticker = "CBA"
+start_date = '2020-01-01'
+end_date = '2023-08-01'
+split_method = 'ratio'          # Options: 'ratio', 'date', 'random'
+split_ratio = 0.8               # Used if split_method='ratio'
+split_date = '2022-01-01'       # Used if split_method='date'
+file_path = "CBA_data.csv"      # Local file path for storing/loading data
+scale_features = True           # Enable feature scaling
+
+# Call the load_data function
+X_train, X_test, y_train, y_test, scalers, df_full = load_data(
+    ticker,
+    start_date,
+    end_date,
+    handle_nan='fill',
+    split_method=split_method,
+    split_ratio=split_ratio,
+    split_date=split_date,
+    save_local=True,
+    file_path=file_path,
+    scale_features=scale_features
+)
+
+# Check correct splitting
+print(X_train)
+print(y_train)
+
+# Show scalers
+print("Scalers:", scalers)
+
+
 #------------------------------------------------------------------------------
 # DATA_SOURCE = "yahoo"
 COMPANY = 'CBA.AX'
@@ -41,7 +192,6 @@ TRAIN_START = '2020-01-01'     # Start date to read
 TRAIN_END = '2023-08-01'       # End date to read
 
 # data = web.DataReader(COMPANY, DATA_SOURCE, TRAIN_START, TRAIN_END) # Read data using yahoo
-
 
 import yfinance as yf
 
